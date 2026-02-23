@@ -7,6 +7,26 @@ let currentSessionId = null;
 // DOM elements
 let chatMessages, chatInput, sendButton, totalCourses, courseTitles, newChatButton;
 
+// Theme toggle
+function toggleTheme() {
+    // Temporarily inject broad transitions for a smooth switch
+    const style = document.createElement('style');
+    style.id = 'theme-transition-override';
+    style.textContent = '*, *::before, *::after { transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease !important; }';
+    document.head.appendChild(style);
+
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+
+    // Remove override after transition completes
+    setTimeout(() => {
+        const el = document.getElementById('theme-transition-override');
+        if (el) el.remove();
+    }, 350);
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     // Get DOM elements after page loads
@@ -16,6 +36,9 @@ document.addEventListener('DOMContentLoaded', () => {
     totalCourses = document.getElementById('totalCourses');
     courseTitles = document.getElementById('courseTitles');
     newChatButton = document.getElementById('newChatButton');
+
+    // Wire up theme toggle button
+    document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 
     setupEventListeners();
     createNewSession();
