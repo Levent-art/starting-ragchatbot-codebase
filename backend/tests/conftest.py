@@ -8,11 +8,16 @@ is downloaded or loaded during the test run.
 import sys
 import os
 from dataclasses import dataclass
+from typing import List, Optional
+from unittest.mock import MagicMock
 
 import pytest
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils.embedding_functions import EmbeddingFunction, Documents, Embeddings
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 # Make backend/ importable without installing the package
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -134,3 +139,86 @@ class MockConfig:
 def mock_config(tmp_path):
     """Config pointing to a temporary ChromaDB directory."""
     return MockConfig(CHROMA_PATH=str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# API test fixtures — build a test FastAPI app without the static-file mount
+# ---------------------------------------------------------------------------
+
+# Pydantic models mirroring app.py (kept local so tests never import app.py)
+class _QueryRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = None
+
+class _QueryResponse(BaseModel):
+    answer: str
+    sources: List[dict]
+    session_id: str
+
+class _CourseStats(BaseModel):
+    total_courses: int
+    course_titles: List[str]
+
+
+@pytest.fixture
+def mock_rag_system():
+    """
+    MagicMock that stands in for RAGSystem.
+
+    Defaults:
+    - query()               → ("Test answer", [{"label": "Src", "link": "http://x"}])
+    - get_course_analytics()→ {"total_courses": 2, "course_titles": ["A", "B"]}
+    - session_manager.create_session() → "generated-session-id"
+    """
+    mock = MagicMock()
+    mock.query.return_value = (
+        "Test answer",
+        [{"label": "Source 1", "link": "http://example.com/1"}],
+    )
+    mock.get_course_analytics.return_value = {
+        "total_courses": 2,
+        "course_titles": ["Python Basics", "Advanced Python"],
+    }
+    mock.session_manager.create_session.return_value = "generated-session-id"
+    return mock
+
+
+@pytest.fixture
+def test_app(mock_rag_system):
+    """
+    Minimal FastAPI app exposing only the API routes — no static-file mount.
+
+    The real app.py mounts ../frontend/ which does not exist in the test
+    environment. This fixture re-implements the two API endpoints with the
+    same request/response contracts, using mock_rag_system instead of a
+    live RAGSystem.
+    """
+    app = FastAPI()
+
+    @app.post("/api/query", response_model=_QueryResponse)
+    async def query_documents(request: _QueryRequest):
+        try:
+            session_id = request.session_id or mock_rag_system.session_manager.create_session()
+            answer, sources = mock_rag_system.query(request.query, session_id)
+            return _QueryResponse(answer=answer, sources=sources, session_id=session_id)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.get("/api/courses", response_model=_CourseStats)
+    async def get_course_stats():
+        try:
+            analytics = mock_rag_system.get_course_analytics()
+            return _CourseStats(
+                total_courses=analytics["total_courses"],
+                course_titles=analytics["course_titles"],
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    return app
+
+
+@pytest.fixture
+def client(test_app):
+    """Synchronous httpx TestClient wrapping the test FastAPI app."""
+    return TestClient(test_app)
